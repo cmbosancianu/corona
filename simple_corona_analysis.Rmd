@@ -1,0 +1,171 @@
+---
+title: "corona"
+author: "ipi"
+date: "3/22/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(WDI)
+library(readxl)
+library(httr)
+library(knitr)
+library(tidyverse)
+library(estimatr)
+```
+
+# Options
+
+```{r}
+download_corona_data <- FALSE
+download_wdi_data    <- FALSE
+```
+
+# Get Corona Data
+
+```{r, eval = download_corona_data}
+url <- paste("https://www.ecdc.europa.eu/sites/default/files/documents/COVID-19-geographic-disbtribution-worldwide-",format(Sys.time(), "%Y-%m-%d"), ".xlsx", sep = "")
+GET(url, authenticate(":", ":", type="ntlm"), write_disk(tf <- tempfile(fileext = ".xlsx")))
+df <- read_excel(tf)
+
+write.csv(df, "saved/corona.csv")
+```
+
+```{r}
+corona <- read.csv("saved/corona.csv")
+head(corona) %>% kable
+```
+
+# Get WDI data
+
+```{r, eval = download_wdi_data}
+
+# write.csv(WDI_data$series,  "saved/wdi_series.csv")
+
+wdi <- WDI(country = "all", 
+         indicator = c(
+            goveffect = "GE.EST", 
+            ineq = "SI.DST.10TH.10", 
+            gdppc = "NY.GDP.PCAP.KD",
+            poptot = "SP.POP.TOTL",
+            popgrowth = "SP.POP.GROW",
+            older_m =  "SP.POP.65UP.MA.IN",
+            older_f = "SP.POP.65UP.FE.IN",
+            gini = "SI.POV.GINI"
+          ), 
+  start = 2018, end = 2018, extra = FALSE, cache = NULL)
+
+write.csv(wdi, "saved/wdi.csv")
+```
+
+```{r}
+
+wdi <- read.csv("saved/wdi.csv")
+
+head(wdi) %>% kable()
+
+
+```
+
+# Merge
+
+```{r}
+df <- left_join(corona, wdi, by = c("GeoId" = "iso2c")) %>%
+      mutate(share_older = (older_m + older_f)/poptot, 
+             date = as.Date(DateRep),
+             elapsed = -2 + date - min(date))
+
+```
+
+
+# Simple plots
+
+```{r}
+
+with(df %>% filter(elapsed == 80 & GeoId != "CN"), {
+  par(mfrow = c(2,2))
+  
+  plot(share_older, Cases, type = "n", xlab = "Share of population over 65")
+  text(share_older, Cases, GeoId)
+
+  plot(gdppc, Cases, type = "n", xlab = "Per capita GDP")
+  text(gdppc, Cases, GeoId)
+
+  plot(goveffect, Cases, type = "n", xlab = "Government effectiveness")
+  text(goveffect, Cases, GeoId)
+  
+  })
+
+```
+
+
+# Analysis: Patterns changing over time
+Note: models exclude China an focuses on spread countries only.
+
+Expecting a shift to poor places over time -- though of course burden still growingin richest places. 
+
+Prediction is that this will fall in the future as OECD gains control and LDCs lose control.
+
+```{r, warning = FALSE, message = FALSE}
+
+results <- function(Y = "Cases", Xs = "gdppc + poptot + share_older + goveffect", range = 50:83, data = filter(df, GeoId != "CN")){
+  my_formula <- paste0(Y, " ~", Xs)
+  lapply(range, function(j) {
+    df <- filter(data, elapsed == j)
+    lm_robust(as.formula(my_formula), data = df) %>% 
+      tidy %>% select(term, estimate, conf.low, conf.high) %>% 
+      mutate(elapsed = j) }) %>%
+  bind_rows() %>%
+  data.frame() %>%
+  filter(term != "(Intercept)")
+}
+
+
+```
+
+
+# Plot
+
+```{r, warning = FALSE}
+
+do_plots <- function(df)
+  df %>% 
+    ggplot(aes(x=elapsed, y=estimate)) + 
+      geom_point() +
+      geom_line() +
+      geom_errorbar(aes(ymin=conf.low, ymax=conf.high), colour="black", width=.1) +
+      xlab("Days since 1 Jan 2020") +
+      ylab("Coefficient") +
+      theme_bw()  +
+      facet_wrap(~term, scales = "free")
+```
+
+## Cases
+
+```{r, warning = FALSE, message = FALSE}
+results_cases <- results("Cases")
+do_plots(results_cases)
+```
+
+## Deaths
+
+```{r, warning = FALSE, message = FALSE}
+results_deaths <- results("Deaths")
+do_plots(results_deaths)
+```
+
+## To do
+
+* Bring in political variables
+  * Democracy
+  * L/R orientation?
+  * Media?
+  * Ethnic Fragmentation: Prediction is it slows down onset but also slows responses
+  
+* Outcomes:
+  * Cases
+  * Deaths
+  * Policies
+  * Growth rate of cases
+  * Growth rate of deaths
